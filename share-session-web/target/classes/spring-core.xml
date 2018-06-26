@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:aop="http://www.springframework.org/schema/aop"
+	xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:redis="http://www.springframework.org/schema/redis"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+		http://www.springframework.org/schema/aop http://www.springframework.org/schema/aop/spring-aop-4.3.xsd
+		http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-4.3.xsd
+		http://www.springframework.org/schema/redis http://www.springframework.org/schema/redis/spring-redis-1.0.xsd">
+
+	<context:component-scan base-package="com.share"></context:component-scan>
+	<context:annotation-config></context:annotation-config>
+	<bean class="org.springframework.context.support.PropertySourcesPlaceholderConfigurer">
+		<property name="locations">
+			<list>
+				<value>classpath:redis.properties</value>
+			</list>
+		</property>
+	</bean>
+	
+	<!-- 1.配置SecurityManager -->
+	<bean id="securityManager" class="org.apache.shiro.web.mgt.DefaultWebSecurityManager">
+		<!-- 多个Realm，代替单个 -->
+		<property name="authenticator" ref="authenticator"></property>
+		<!-- 如果使用授权，就需要将多个Realm配置在这里，而不是authenticator里面 -->
+		<property name="realms">
+			<list>
+				<!-- 注意，Realm是有顺序的 -->
+				<ref bean="authorityRealm"/>
+			</list>
+		</property>
+		<!-- session管理 -->
+		<property name="sessionManager" ref="sessionManager"></property>
+	</bean>
+	<!-- redis操作 -->
+	<bean id="redisManager" class="com.share.auth.redis.RedisManager"></bean>
+	<!-- Session ID 生成器 -->
+	<bean id="sessionIdGenerator" class="org.apache.shiro.session.mgt.eis.JavaUuidSessionIdGenerator"></bean>
+	<!-- SessionDao实现类 -->
+	<bean id="sessionDAO" class="com.share.auth.redis.MySessionDao">
+		<property name="sessionIdGenerator" ref="sessionIdGenerator"></property>
+	</bean>
+	<!-- session管理 -->
+	<bean id="sessionManager" class="org.apache.shiro.web.session.mgt.DefaultWebSessionManager">
+		<property name="globalSessionTimeout" value="1800000"></property>
+		<property name="deleteInvalidSessions" value="true"></property>
+		<property name="sessionDAO" ref="sessionDAO"></property>
+		<!-- sessionIdCookie的实现,用于重写覆盖容器默认的JSESSIONID -->
+        <property name="sessionIdCookie" ref="sharesession" />
+	</bean>
+	<!-- sessionIdCookie的实现,用于重写覆盖容器默认的JSESSIONID -->
+    <bean id="sharesession" class="org.apache.shiro.web.servlet.SimpleCookie">
+        <!-- cookie的name,对应的默认是 JSESSIONID -->
+        <constructor-arg name="name" value="SHAREJSESSIONID" />
+        <!-- jsessionId的path为 / 用于多个系统共享jsessionId -->
+        <property name="path" value="/" />
+        <property name="httpOnly" value="true"/>
+    </bean>
+	
+	<!-- 2.配置多个Realm(认证器) -->
+	<bean id="authenticator" class="org.apache.shiro.authc.pam.ModularRealmAuthenticator">
+		<!-- 认证策略 -->
+		<property name="authenticationStrategy">
+			<bean class="org.apache.shiro.authc.pam.AllSuccessfulStrategy"></bean>
+		</property>
+	</bean>
+	
+	<!-- 3. 配置Realm（需要我们自己实现一个Realm接口） -->
+	<!-- 认证&授权：继承AuthorizingRealm | 仅仅认证：继承AuthenticatingRealm -->
+	<bean id="authorityRealm" class="com.share.auth.PermissionRealm">
+		<property name="credentialsMatcher">
+			<bean class="org.apache.shiro.authc.credential.HashedCredentialsMatcher">
+				<!-- 指定加密算法 -->
+				<property name="hashAlgorithmName" value="MD5"></property>
+				<!-- 指定加密次数 -->
+				<property name="hashIterations" value="10"></property>
+				<!-- 配置这个就不会报错
+					There was a failure while trying to retrieve remembered principals. -->
+				<property name="storedCredentialsHexEncoded" value="true"/>
+			</bean>
+		</property>
+	</bean>
+	
+	<!-- 4. 配置LifecycleBeanPostProcessor，可以来自动的调用配置在Spring IOC容器中 Shiro Bean 的生命周期方法 -->
+	<bean id="lifecycleBeanPostProcessor" class="org.apache.shiro.spring.LifecycleBeanPostProcessor" />
+
+	<!-- 5.启用IOC容器中使用Shiro的注解，但是必须配置第四步才可以使用 -->
+	<bean
+		class="org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator"
+		depends-on="lifecycleBeanPostProcessor" />
+	<bean
+		class="org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor">
+		<property name="securityManager" ref="securityManager" />
+	</bean>
+	
+	<!-- 	6. 配置ShiroFilter
+			6.1 id必须和web.xml文件中配置的DelegatingFilterProxy的Filter <filter-name>一致
+	-->
+	<bean id="shiroFilter" class="org.apache.shiro.spring.web.ShiroFilterFactoryBean">
+		<property name="securityManager" ref="securityManager" />
+		<!-- 登录URL -->
+		<property name="loginUrl" value="/index" />
+		<!-- 登陆成功页面，可有可无 ,建议不配置，shiro认证成功自动到上一个请求路径
+		<property name="successUrl" value="/home" />
+		-->
+		<!-- 没有权限的页面 -->
+		<property name="unauthorizedUrl" value="/unauthorized" />
+		
+		<!-- 用<property name="filterChainDefinitions">配置权限不安全，所以可以改变为实例工厂方法 -->
+		<property name="filterChainDefinitionMap" ref="filterChainDefinitionMap"></property>
+	</bean>
+	<!-- 实例工厂 -->
+	<bean id="filterChainDefinitionMapBuilder" class="com.share.auth.FilterChainDefinitionMapBuilder"></bean>
+	<!-- 生成Map -->
+	<bean id="filterChainDefinitionMap" 
+		factory-bean="filterChainDefinitionMapBuilder"
+		factory-method="build"></bean>
+	
+	
+	<!-- 以下是Redis -->
+	<context:property-placeholder location="classpath:redis.properties"/>
+	<bean id="jedisPoolConfig" class="redis.clients.jedis.JedisPoolConfig">
+		<property name="maxIdle" value="${redis.maxIdle}"></property>
+		<property name="maxTotal" value="${redis.maxTotal}"></property>
+		<property name="maxWaitMillis" value="${redis.maxWaitMillis}"></property>
+		<property name="testOnBorrow" value="${redis.testOnBorrow}"></property>
+	</bean>
+
+	<bean id="jedisConnectionFactory" class="org.springframework.data.redis.connection.jedis.JedisConnectionFactory">
+		<property name="usePool" value="${redis.pooled}"></property>
+		<property name="hostName" value="${redis.host}"></property>
+		<property name="port" value="${redis.port}"></property>
+		<property name="poolConfig" ref="jedisPoolConfig"></property>
+	</bean>
+	<bean id="redisTemplate" class="org.springframework.data.redis.core.RedisTemplate">
+		<property name="connectionFactory" ref="jedisConnectionFactory"></property>
+		<property name="keySerializer">
+			<bean class="org.springframework.data.redis.serializer.StringRedisSerializer"></bean>
+		</property>
+		<!-- 解决读取int类型value值报错的问题 -->
+		<property name="valueSerializer">
+			<bean class="org.springframework.data.redis.serializer.StringRedisSerializer"></bean>
+		</property>
+		<property name="hashKeySerializer">
+			<bean class="org.springframework.data.redis.serializer.StringRedisSerializer"></bean>
+		</property>
+	</bean>
+	
+</beans>
